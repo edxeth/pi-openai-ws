@@ -2,7 +2,13 @@
 
 WebSocket transport provider shim for Pi models served through OpenAI Responses-compatible proxies.
 
-The extension is proxy-agnostic across proxies that implement the OpenAI Responses WebSocket protocol. It is not tied to `codex-lb`; `codex-lb` is only a known compatible target.
+The extension is proxy-agnostic across proxies that implement the OpenAI Responses WebSocket protocol.
+
+## Install
+
+```bash
+pi install git:github.com/edxeth/pi-openai-ws
+```
 
 ## Compatibility contract
 
@@ -138,6 +144,5 @@ Reference snapshots from OpenAI docs and SDK sources live under `docs/references
 
 ## Known caveats
 
-- The proxy must implement OpenAI Responses WebSocket semantics. Generic OpenAI-like HTTP/SSE proxies are not enough.
 - There is no silent SSE fallback. If WebSocket is down or incompatible, the request fails; use a separate SSE provider for fallback.
 - The extension imports Pi's internal OpenAI Responses stream parser via package resolution. It may need adjustment after Pi internal API changes.
