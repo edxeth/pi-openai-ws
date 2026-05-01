@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
   type AssistantMessage,
   type AssistantMessageEventStream,
@@ -11,15 +9,12 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const piAiEntryUrl = import.meta.resolve("@mariozechner/pi-ai");
 const responsesSharedUrl = new URL("./providers/openai-responses-shared.js", piAiEntryUrl).href;
 const responsesShared = await import(responsesSharedUrl);
-const {
-  convertResponsesMessages,
-  convertResponsesTools,
-  processResponsesStream,
-} = responsesShared as {
+const { convertResponsesMessages, convertResponsesTools, processResponsesStream } = responsesShared as {
   convertResponsesMessages: (...args: any[]) => any;
   convertResponsesTools: (...args: any[]) => any;
   processResponsesStream: (...args: any[]) => Promise<void>;
@@ -34,6 +29,7 @@ const OPENAI_BETA_RESPONSES_WEBSOCKETS = "responses_websockets=2026-02-06";
 const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const allowedToolCallProviders = new Set<string>();
+const providerApiKeys = new Map<string, string>();
 
 type AnyRecord = Record<string, any>;
 type CachedContinuation = {
@@ -67,6 +63,7 @@ export default function (pi: ExtensionAPI) {
 
     const providerName = sourceProvider.endsWith("-ws") ? sourceProvider : `${sourceProvider}${PROVIDER_SUFFIX}`;
     allowedToolCallProviders.add(providerName);
+    providerApiKeys.set(providerName, resolveApiKey(source.apiKey));
 
     pi.registerProvider(providerName, {
       name: `${sourceProvider} WebSocket`,
@@ -87,6 +84,11 @@ export default function (pi: ExtensionAPI) {
 function readCustomModels(): AnyRecord {
   const path = process.env.PI_MODELS_JSON || join(homedir(), ".pi", "agent", "models.json");
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function resolveApiKey(apiKey: unknown): string {
+  if (typeof apiKey !== "string" || apiKey.length === 0) return "dummy";
+  return process.env[apiKey] || apiKey;
 }
 
 export function streamOpenAIResponsesWebSocket(
@@ -145,9 +147,9 @@ export function streamOpenAIResponsesWebSocket(
   return stream;
 }
 
-/** Strip reasoning item IDs from input. The response may not be stored (store:false
- * set by proxy or provider), making reasoning item IDs unresolvable on follow-up
- * requests even when previous_response_id works. Only the summary text matters. */
+/** Strip server-scoped reasoning IDs from input items.
+ * With store:false/ZDR, prior reasoning IDs may be unresolvable on follow-up
+ * requests. Keep summaries/encrypted_content, but let the server create fresh IDs. */
 function stripReasoningItemIds(input: AnyRecord[]): AnyRecord[] {
   return input.map((item) => {
     if (item.type === "reasoning" && item.id) {
@@ -158,14 +160,12 @@ function stripReasoningItemIds(input: AnyRecord[]): AnyRecord[] {
   });
 }
 
-function buildResponsesBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): AnyRecord {
+export function buildResponsesBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): AnyRecord {
   const input = stripReasoningItemIds(convertResponsesMessages(model, context, allowedToolCallProviders));
   const body: AnyRecord = {
     model: model.id,
     input,
-    stream: true,
-    // Omit store:false when using previous_response_id (cached transport)
-    store: options?.transport === "websocket-cached" ? undefined : false,
+    store: false,
   };
 
   if (options?.maxTokens) body.max_output_tokens = options.maxTokens;
@@ -178,13 +178,17 @@ function buildResponsesBody(model: Model<any>, context: Context, options?: Simpl
       effort: clampReasoningEffort(model.id, options?.reasoning || "medium"),
       summary: "auto",
     };
+    body.include = ["reasoning.encrypted_content"];
   }
   return body;
 }
 
 function clampReasoningEffort(modelId: string, effort: string) {
   const id = modelId.includes("/") ? modelId.split("/").pop()! : modelId;
-  if ((id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4") || id.startsWith("gpt-5.5")) && effort === "minimal") {
+  if (
+    (id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4") || id.startsWith("gpt-5.5")) &&
+    effort === "minimal"
+  ) {
     return "low";
   }
   if (id === "gpt-5.1" && effort === "xhigh") return "high";
@@ -204,9 +208,9 @@ export function resolveResponsesWebSocketUrl(baseUrl: string): string {
   return url.toString();
 }
 
-function buildWebSocketHeaders(model: Model<any>, options?: SimpleStreamOptions): Headers {
+export function buildWebSocketHeaders(model: Model<any>, options?: SimpleStreamOptions): Headers {
   const headers = new Headers(model.headers || {});
-  const apiKey = options?.apiKey || "dummy";
+  const apiKey = resolveApiKey(options?.apiKey || providerApiKeys.get(model.provider) || (model as AnyRecord).apiKey);
   headers.set("Authorization", `Bearer ${apiKey}`);
   headers.set("OpenAI-Beta", OPENAI_BETA_RESPONSES_WEBSOCKETS);
   headers.set("User-Agent", "pi-openai-ws-extension");
@@ -249,12 +253,11 @@ async function processWebSocketStream(
     if (options?.signal?.aborted) {
       keepConnection = false;
     } else if (shouldCacheConnection && entry && output.responseId) {
-      const responseItems = convertResponsesMessages(
-        model,
-        { messages: [output] },
-        allowedToolCallProviders,
-        { includeSystemPrompt: false },
-      ).filter((item: AnyRecord) => item.type !== "function_call_output");
+      const responseItems = stripReasoningItemIds(
+        convertResponsesMessages(model, { messages: [output] }, allowedToolCallProviders, {
+          includeSystemPrompt: false,
+        }).filter((item: AnyRecord) => item.type !== "function_call_output"),
+      );
       entry.continuation = {
         lastRequestBody: body,
         lastResponseId: output.responseId,
@@ -270,7 +273,7 @@ async function processWebSocketStream(
   }
 }
 
-async function* mapResponseEvents(events: AsyncIterable<AnyRecord>) {
+export async function* mapResponseEvents(events: AsyncIterable<AnyRecord>) {
   for await (const event of events) {
     // Normalize nested error format ({type:"error",error:{...}})
     // to flat format ({type:"error",code:"...",message:"..."})
@@ -317,8 +320,11 @@ export function buildCachedWebSocketRequestBody(entry: CachedConnection, body: A
 
 function getCachedWebSocketInputDelta(body: AnyRecord, continuation: CachedContinuation) {
   if (!requestBodiesMatchExceptInput(body, continuation.lastRequestBody)) return undefined;
-  const currentInput = body.input || [];
-  const baseline = [...(continuation.lastRequestBody.input || []), ...continuation.lastResponseItems];
+  const currentInput = stripReasoningItemIds(body.input || []);
+  const baseline = stripReasoningItemIds([
+    ...(continuation.lastRequestBody.input || []),
+    ...continuation.lastResponseItems,
+  ]);
   if (currentInput.length < baseline.length) return undefined;
   const prefix = currentInput.slice(0, baseline.length);
   if (JSON.stringify(prefix) !== JSON.stringify(baseline)) return undefined;
@@ -334,7 +340,12 @@ function requestBodyWithoutInput(body: AnyRecord): AnyRecord {
   return rest;
 }
 
-async function acquireWebSocket(url: string, headers: Headers, sessionId?: string, signal?: AbortSignal): Promise<AcquiredSocket> {
+async function acquireWebSocket(
+  url: string,
+  headers: Headers,
+  sessionId?: string,
+  signal?: AbortSignal,
+): Promise<AcquiredSocket> {
   if (!sessionId) {
     const socket = await connectWebSocket(url, headers, signal);
     return { socket, reused: false, release: () => closeWebSocketSilently(socket) };
@@ -519,7 +530,8 @@ async function* parseWebSocket(socket: WebSocket, signal?: AbortSignal): AsyncIt
 async function decodeWebSocketData(data: any): Promise<string | null> {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(data));
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  if (ArrayBuffer.isView(data))
+    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
   if (data && typeof data === "object" && "arrayBuffer" in data) {
     const arrayBuffer = await data.arrayBuffer();
     return new TextDecoder().decode(new Uint8Array(arrayBuffer));

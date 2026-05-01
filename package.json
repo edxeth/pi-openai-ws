@@ -1,0 +1,30 @@
+{
+  "name": "pi-openai-ws",
+  "version": "0.1.0",
+  "description": "WebSocket/cached transport provider shim for OpenAI Responses-compatible proxies in Pi",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:cache": "bun test/fixtures/cache-benchmark.mjs",
+    "test:mock": "bun test/fixtures/cached-continuation-check.mjs",
+    "test:mock:server": "bun test/fixtures/mock-openai-responses-ws.mjs",
+    "typecheck": "tsc --noEmit --skipLibCheck --allowImportingTsExtensions --moduleResolution bundler --module esnext --target es2022 src/index.ts",
+    "check": "bun test && bun run test:cache && bun run typecheck && biome check . && knip",
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "knip": "knip"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.14",
+    "@mariozechner/pi-ai": "file:/home/devkit/.bun/install/global/node_modules/@mariozechner/pi-ai",
+    "@mariozechner/pi-coding-agent": "file:/home/devkit/.bun/install/global/node_modules/@mariozechner/pi-coding-agent",
+    "knip": "^6.10.0",
+    "typescript": "^6.0.3"
+  }
+}
