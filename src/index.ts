@@ -145,8 +145,21 @@ export function streamOpenAIResponsesWebSocket(
   return stream;
 }
 
+/** Strip reasoning item IDs from input. The response may not be stored (store:false
+ * set by proxy or provider), making reasoning item IDs unresolvable on follow-up
+ * requests even when previous_response_id works. Only the summary text matters. */
+function stripReasoningItemIds(input: AnyRecord[]): AnyRecord[] {
+  return input.map((item) => {
+    if (item.type === "reasoning" && item.id) {
+      const { id: _id, ...rest } = item;
+      return rest;
+    }
+    return item;
+  });
+}
+
 function buildResponsesBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): AnyRecord {
-  const input = convertResponsesMessages(model, context, allowedToolCallProviders);
+  const input = stripReasoningItemIds(convertResponsesMessages(model, context, allowedToolCallProviders));
   const body: AnyRecord = {
     model: model.id,
     input,
