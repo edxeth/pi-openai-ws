@@ -1,6 +1,6 @@
 {
   "name": "pi-openai-ws",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "WebSocket/cached transport provider shim for OpenAI Responses-compatible proxies in Pi",
   "type": "module",
   "private": true,
