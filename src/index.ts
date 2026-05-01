@@ -151,7 +151,8 @@ function buildResponsesBody(model: Model<any>, context: Context, options?: Simpl
     model: model.id,
     input,
     stream: true,
-    store: false,
+    // Omit store:false when using previous_response_id (cached transport)
+    store: options?.transport === "websocket-cached" ? undefined : false,
   };
 
   if (options?.maxTokens) body.max_output_tokens = options.maxTokens;
@@ -258,6 +259,20 @@ async function processWebSocketStream(
 
 async function* mapResponseEvents(events: AsyncIterable<AnyRecord>) {
   for await (const event of events) {
+    // Normalize nested error format ({type:"error",error:{...}})
+    // to flat format ({type:"error",code:"...",message:"..."})
+    // as expected by processResponsesStream
+    if (event.type === "error" && event.error && typeof event.error === "object") {
+      const normalized = { ...event };
+      if (event.code === undefined && event.error.code !== undefined) {
+        normalized.code = event.error.code;
+      }
+      if (event.message === undefined && event.error.message !== undefined) {
+        normalized.message = event.error.message;
+      }
+      yield normalized;
+      return;
+    }
     if (event.type === "response.done" || event.type === "response.incomplete") {
       yield { ...event, type: "response.completed" };
       return;

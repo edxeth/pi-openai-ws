@@ -12,7 +12,7 @@ The extension reads `~/.pi/agent/models.json` on Pi startup/reload. The default 
   "baseUrl": "http://127.0.0.1:2455/v1",
   "apiKey": "dummy",
   "models": [
-    { "id": "gpt-5.4-mini", "name": "GPT-5.4-Mini WS" }
+    { "id": "gpt-5.4-mini", "name": "GPT-5.4-Mini" }
   ]
 }
 ```
