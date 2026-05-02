@@ -240,10 +240,61 @@ async function processWebSocketStream(
   model: Model<any>,
   options?: SimpleStreamOptions,
 ) {
-  const { socket, entry, release } = await acquireWebSocket(url, headers, options?.sessionId, options?.signal);
   const shouldCacheConnection = options?.transport === "websocket-cached" && process.stdout.isTTY;
+  const firstAttempt = await sendWebSocketAttempt(
+    url,
+    body,
+    headers,
+    output,
+    stream,
+    model,
+    shouldCacheConnection,
+    true,
+    options,
+  );
+  if (!firstAttempt.error) return;
+
+  if (
+    !options?.signal?.aborted &&
+    shouldRetryCachedContinuationError(firstAttempt.error, {
+      usedPreviousResponseId: firstAttempt.usedPreviousResponseId,
+    })
+  ) {
+    resetAssistantOutputForRetry(output);
+    const retryAttempt = await sendWebSocketAttempt(
+      url,
+      body,
+      headers,
+      output,
+      stream,
+      model,
+      shouldCacheConnection,
+      false,
+      options,
+    );
+    if (!retryAttempt.error) return;
+    throw retryAttempt.error;
+  }
+
+  throw firstAttempt.error;
+}
+
+async function sendWebSocketAttempt(
+  url: string,
+  body: AnyRecord,
+  headers: Headers,
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  model: Model<any>,
+  shouldCacheConnection: boolean,
+  useCachedContinuation: boolean,
+  options?: SimpleStreamOptions,
+): Promise<{ error?: Error; usedPreviousResponseId: boolean }> {
+  const { socket, entry, release } = await acquireWebSocket(url, headers, options?.sessionId, options?.signal);
   let keepConnection = shouldCacheConnection;
-  const requestBody = shouldCacheConnection && entry ? buildCachedWebSocketRequestBody(entry, body) : body;
+  const requestBody =
+    shouldCacheConnection && useCachedContinuation && entry ? buildCachedWebSocketRequestBody(entry, body) : body;
+  const usedPreviousResponseId = "previous_response_id" in requestBody;
 
   try {
     socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
@@ -252,6 +303,8 @@ async function processWebSocketStream(
 
     if (options?.signal?.aborted) {
       keepConnection = false;
+    } else if (output.stopReason === "error") {
+      throw new Error(output.errorMessage || "Provider returned an error stop reason");
     } else if (shouldCacheConnection && entry && output.responseId) {
       const responseItems = stripReasoningItemIds(
         convertResponsesMessages(model, { messages: [output] }, allowedToolCallProviders, {
@@ -264,13 +317,21 @@ async function processWebSocketStream(
         lastResponseItems: responseItems,
       };
     }
+    return { usedPreviousResponseId };
   } catch (error) {
     if (entry) entry.continuation = undefined;
     keepConnection = false;
-    throw error;
+    return { error: error instanceof Error ? error : new Error(String(error)), usedPreviousResponseId };
   } finally {
     release({ keep: keepConnection });
   }
+}
+
+function resetAssistantOutputForRetry(output: AssistantMessage) {
+  output.content = [];
+  output.stopReason = "stop";
+  delete output.errorMessage;
+  delete output.responseId;
 }
 
 export async function* mapResponseEvents(events: AsyncIterable<AnyRecord>) {
@@ -338,6 +399,34 @@ function requestBodiesMatchExceptInput(a: AnyRecord, b: AnyRecord): boolean {
 function requestBodyWithoutInput(body: AnyRecord): AnyRecord {
   const { input: _input, previous_response_id: _previousResponseId, ...rest } = body;
   return rest;
+}
+
+export function shouldRetryCachedContinuationError(
+  error: unknown,
+  options: { usedPreviousResponseId: boolean },
+): boolean {
+  if (!options.usedPreviousResponseId) return false;
+  const text = errorToSearchText(error);
+  if (text.includes("request was aborted")) return false;
+  if (text.includes("previous_response_id")) return true;
+  if (text.includes("previous response")) return true;
+  if (text.includes("response owner")) return true;
+  if (text.includes("resp_") && text.includes("not found")) return true;
+  if (text.includes("response") && text.includes("not found")) return true;
+  if (text.includes("websocket closed before response.completed")) return true;
+  return false;
+}
+
+function errorToSearchText(error: unknown): string {
+  if (error instanceof Error) {
+    const details = [error.name, error.message];
+    const maybeRecord = error as AnyRecord;
+    if (typeof maybeRecord.code === "string") details.push(maybeRecord.code);
+    if (typeof maybeRecord.type === "string") details.push(maybeRecord.type);
+    return details.join(" ").toLowerCase();
+  }
+  if (error && typeof error === "object") return JSON.stringify(error).toLowerCase();
+  return String(error).toLowerCase();
 }
 
 async function acquireWebSocket(

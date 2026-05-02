@@ -7,10 +7,11 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:cache": "bun test/fixtures/cache-benchmark.mjs",
+    "test:retry": "bun test/fixtures/continuation-retry-check.mjs",
     "test:mock": "bun test/fixtures/cached-continuation-check.mjs",
     "test:mock:server": "bun test/fixtures/mock-openai-responses-ws.mjs",
     "typecheck": "tsc --noEmit --skipLibCheck --allowImportingTsExtensions --moduleResolution bundler --module esnext --target es2022 src/index.ts",
-    "check": "bun test && bun run test:cache && bun run typecheck && biome check . && knip",
+    "check": "bun test && bun run test:cache && bun run test:retry && bun run typecheck && biome check . && knip",
     "format": "biome check --write .",
     "lint": "biome check .",
     "knip": "knip"

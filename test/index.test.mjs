@@ -7,6 +7,7 @@ import {
   buildWebSocketHeaders,
   mapResponseEvents,
   resolveResponsesWebSocketUrl,
+  shouldRetryCachedContinuationError,
 } from "../src/index.ts";
 
 test("resolveResponsesWebSocketUrl converts http/https base URLs", () => {
@@ -204,6 +205,38 @@ test("buildCachedWebSocketRequestBody falls back to full body when non-input pay
 
   assert.equal(buildCachedWebSocketRequestBody(entry, body), body);
   assert.equal(entry.continuation, undefined);
+});
+
+test("shouldRetryCachedContinuationError recognizes stale continuation failures only after cached requests", () => {
+  assert.equal(
+    shouldRetryCachedContinuationError(new Error("Previous response owner account is unavailable; retry later."), {
+      usedPreviousResponseId: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRetryCachedContinuationError(new Error("Item with id 'resp_123' not found."), {
+      usedPreviousResponseId: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRetryCachedContinuationError(new Error("Previous response owner account is unavailable; retry later."), {
+      usedPreviousResponseId: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRetryCachedContinuationError(
+      new Error("Upstream websocket closed before response.completed: no close frame received or sent"),
+      { usedPreviousResponseId: true },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldRetryCachedContinuationError(new Error("Request was aborted"), { usedPreviousResponseId: true }),
+    false,
+  );
 });
 
 test("mapResponseEvents flattens nested websocket error events", async () => {
